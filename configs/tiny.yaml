@@ -1,0 +1,57 @@
+model:
+  name: "Privan-Tiny"
+  vocab_size: 50257
+  context_length: 128
+  embedding_dim: 128
+  num_layers: 2
+  num_heads: 4
+  mlp_dim: 512
+  dropout: 0.0
+  bias: true
+  weight_tying: true
+  activation: "gelu"
+  norm_eps: 1.0e-5
+
+training:
+  batch_size: 4
+  gradient_accumulation_steps: 1
+  max_steps: 500
+  eval_interval: 50
+  eval_steps: 20
+  log_interval: 10
+  save_interval: 100
+  max_grad_norm: 1.0
+  gradient_checkpointing: false
+  precision: "fp32"
+  seed: 42
+
+optimizer:
+  type: "adamw"
+  learning_rate: 0.001
+  beta1: 0.9
+  beta2: 0.95
+  epsilon: 1.0e-8
+  weight_decay: 0.01
+
+scheduler:
+  type: "cosine"
+  warmup_steps: 50
+  min_lr: 0.0001
+
+dataset:
+  train_path: "data/processed/train.bin"
+  val_path: "data/processed/val.bin"
+  num_workers: 0
+  pin_memory: false
+  prefetch_factor: null
+  drop_last: true
+
+checkpoint:
+  output_dir: "checkpoints"
+  save_interval: 100
+  keep_last: 2
+
+logging:
+  log_dir: "logs"
+  use_tensorboard: false
+  use_wandb: false

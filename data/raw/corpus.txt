@@ -1,0 +1,19 @@
+Artificial intelligence is the simulation of human intelligence processes by computer systems. These processes include the learning of information and rules for using the information, reasoning to reach approximate or definite conclusions, and self-correction. Particular applications of AI include expert systems, speech recognition, machine vision, and natural language processing.
+
+Large language models represent a significant breakthrough in deep learning. A transformer is a deep learning model introduced in the paper "Attention Is All You Need". Unlike recurrent neural networks, transformers process the entire sequence of tokens simultaneously using multi-head self-attention.
+
+Self-attention allows the model to weigh the significance of different tokens relative to one another in an input sequence. The scaled dot-product attention computes the inner product between query and key vectors, scales the resulting values by the square root of the key dimension, applies a softmax activation function, and computes a linear combination of the value vectors.
+
+Causal language modeling is a self-supervised pretraining objective where the model is trained to predict the next token given all preceding tokens. For a sequence of tokens from x_1 to x_T, the objective is to maximize the log-likelihood of each token conditioned on the causal context.
+
+In modern generative transformers, decoder-only architectures are favored for autoregressive text generation. Models such as GPT, LLaMA, and Privan use stacks of transformer decoder blocks with causal masking. The causal mask is a lower-triangular matrix that ensures position i cannot attend to any future position j where j is greater than i.
+
+Pre-LayerNorm architectures apply layer normalization to the input of each sub-layer before the self-attention and feed-forward operations, followed by a residual connection. This stabilizes optimization in deep neural networks and enables training without needing complex learning rate warm-up heuristics.
+
+The Feed-Forward Network, or MLP, typically projects the hidden representation to a higher dimension, applies a non-linear activation function such as the Gaussian Error Linear Unit (GELU), and projects back to the original embedding dimension. GELU weights inputs by their probability under a Gaussian distribution, providing smooth gradients across positive and negative domains.
+
+Optimization in large language models relies predominantly on AdamW, a variant of the Adam optimizer that decouples weight decay from gradient updates. Decoupled weight decay ensures that L2 regularization acts directly on the weight parameters rather than interacting with the moving averages of the gradients. Biases and normalization parameters are typically excluded from weight decay to preserve representation scaling.
+
+Byte-Level Byte-Pair Encoding (BPE) is an effective subword tokenization technique. By operating on raw UTF-8 bytes rather than unicode characters, byte-level BPE can represent any arbitrary text without out-of-vocabulary tokens while maintaining a compact vocabulary.
+
+Fine-tuning adapts foundation models to specific tasks. Supervised instruction fine-tuning formats datasets into prompt-response pairs, where loss is computed specifically on the response tokens. Low-Rank Adaptation (LoRA) enables parameter-efficient fine-tuning by freezing pretrained weights and injecting trainable rank-decomposition matrices into transformer layers, drastically reducing the memory and storage required for task-specific models.

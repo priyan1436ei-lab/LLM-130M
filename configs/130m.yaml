@@ -1,0 +1,57 @@
+model:
+  name: "Privan-130M"
+  vocab_size: 50257
+  context_length: 1024
+  embedding_dim: 768
+  num_layers: 12
+  num_heads: 12
+  mlp_dim: 3072
+  dropout: 0.0
+  bias: true
+  weight_tying: true
+  activation: "gelu"
+  norm_eps: 1.0e-5
+
+training:
+  batch_size: 8
+  gradient_accumulation_steps: 16
+  max_steps: 100000
+  eval_interval: 1000
+  eval_steps: 100
+  log_interval: 10
+  save_interval: 1000
+  max_grad_norm: 1.0
+  gradient_checkpointing: false
+  precision: "bf16" # Options: bf16, fp16, fp32, auto
+  seed: 42
+
+optimizer:
+  type: "adamw"
+  learning_rate: 0.0003
+  beta1: 0.9
+  beta2: 0.95
+  epsilon: 1.0e-8
+  weight_decay: 0.1
+
+scheduler:
+  type: "cosine"
+  warmup_steps: 2000
+  min_lr: 0.00003
+
+dataset:
+  train_path: "data/processed/train.bin"
+  val_path: "data/processed/val.bin"
+  num_workers: 2
+  pin_memory: true
+  prefetch_factor: 2
+  drop_last: true
+
+checkpoint:
+  output_dir: "checkpoints"
+  save_interval: 1000
+  keep_last: 5
+
+logging:
+  log_dir: "logs"
+  use_tensorboard: true
+  use_wandb: false

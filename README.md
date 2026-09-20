@@ -272,4 +272,3 @@ Measures:
 
 ## License
 Privan-130M is released under the **Apache 2.0 License**. See [LICENSE](LICENSE) for details.
-# LLM-130M

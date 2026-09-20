@@ -1,0 +1,28 @@
+{
+  "vocab_size": 1000,
+  "dtype": "uint16",
+  "total_documents": 10,
+  "splits": {
+    "train": {
+      "num_documents": 8,
+      "num_tokens": 641,
+      "char_count": 2837,
+      "file_path": "data\\processed\\train.bin",
+      "file_size_bytes": 1282
+    },
+    "val": {
+      "num_documents": 1,
+      "num_tokens": 77,
+      "char_count": 383,
+      "file_path": "data\\processed\\val.bin",
+      "file_size_bytes": 154
+    },
+    "test": {
+      "num_documents": 1,
+      "num_tokens": 64,
+      "char_count": 301,
+      "file_path": "data\\processed\\test.bin",
+      "file_size_bytes": 128
+    }
+  }
+}
