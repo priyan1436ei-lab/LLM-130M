@@ -1,274 +1,1057 @@
-# Privan-130M: A ~130M Parameter Decoder-Only Foundation LLM from Scratch in PyTorch
+# 🧠 Privan-130M
 
-Privan-130M is a complete, modular, from-scratch implementation of a ~130M parameter causal decoder-only transformer language model built entirely in pure PyTorch. 
+### From-Scratch Decoder-Only Language Model in PyTorch
 
-This is not a wrapper, nor does it rely on remote APIs or pre-packaged GPT models. Every single component—from subword tokenization, positional embeddings, causal multi-head self-attention with KV-caching, Pre-LayerNorm transformer blocks, and decoupled AdamW optimization to distributed training (DDP), LoRA fine-tuning, and FastAPI inference—is implemented cleanly from foundational mathematical principles.
+**Privan-130M** is a from-scratch implementation of a GPT-style, decoder-only Transformer language model built with PyTorch.
 
----
+The project focuses on understanding and implementing the complete LLM stack — from **tokenization and dataset preparation to Transformer training, KV-cache inference, LoRA fine-tuning, distributed training, evaluation, and API serving**.
 
-## Architecture Specification
-
-| Hyperparameter | Value | Description |
-| :--- | :--- | :--- |
-| **Model Name** | Privan-130M | Foundation Decoder-Only Transformer |
-| **Vocabulary Size ($V$)** | 50,257 | Byte-Level BPE subword vocabulary |
-| **Context Length ($T$)** | 1,024 tokens | Maximum sequence length |
-| **Embedding Dimension ($D$)** | 768 | Hidden representation dimension |
-| **Transformer Layers ($L$)** | 12 | Number of stacked decoder blocks |
-| **Attention Heads ($H$)** | 12 | Number of parallel attention heads |
-| **Head Dimension ($d_{\text{head}}$)** | 64 | $768 / 12 = 64$ |
-| **MLP Inner Dimension** | 3,072 | $4 \times 768$ expansion dimension |
-| **Activation** | GELU | Gaussian Error Linear Unit (approximate='tanh') |
-| **Normalization** | Pre-LayerNorm | Normalized residual stream ($\epsilon = 10^{-5}$) |
-| **Weight Tying** | Enabled | `lm_head.weight` tied to `token_embedding.weight` |
-| **Total Trainable Parameters** | **124,439,808 (~124.4M)** | Tied weights (163,037,184 un-tied) |
+> **Current model size:** ~124.4M trainable parameters
+> **Model class:** ~130M-parameter decoder-only Transformer
 
 ---
 
-## Directory Structure
+## 🎬 Visual Architecture
 
+```text
+                         ┌────────────────────┐
+                         │      INPUT TEXT    │
+                         │  "The future of AI"│
+                         └──────────┬─────────┘
+                                    │
+                                    ▼
+                         ┌────────────────────┐
+                         │      TOKENIZER     │
+                         │   BPE + ByteLevel  │
+                         └──────────┬─────────┘
+                                    │
+                                    ▼
+                         ┌────────────────────┐
+                         │     TOKEN IDs      │
+                         │ [1842, 492, 312...]│
+                         └──────────┬─────────┘
+                                    │
+                                    ▼
+                    ┌──────────────────────────────┐
+                    │     TOKEN + POSITION        │
+                    │        EMBEDDINGS            │
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+              ┌────────────────────────────────────────┐
+              │          TRANSFORMER BLOCK × 12         │
+              │                                        │
+              │  ┌──────────────┐   ┌──────────────┐  │
+              │  │ LayerNorm    │   │ LayerNorm    │  │
+              │  └──────┬───────┘   └──────┬───────┘  │
+              │         ▼                  ▼           │
+              │  ┌──────────────┐   ┌──────────────┐  │
+              │  │ Causal Self  │   │     MLP      │  │
+              │  │  Attention   │   │ 768 → 3072   │  │
+              │  │    Q K V     │   │ 3072 → 768   │  │
+              │  └──────┬───────┘   └──────┬───────┘  │
+              │         └────────┬─────────┘           │
+              │                  ▼                     │
+              │          Residual Connections          │
+              └──────────────────┬─────────────────────┘
+                                 │
+                                 ▼
+                         ┌────────────────┐
+                         │  Final LayerNorm│
+                         └────────┬───────┘
+                                  │
+                                  ▼
+                         ┌────────────────┐
+                         │     LM HEAD    │
+                         │ 768 → 50,257   │
+                         └────────┬───────┘
+                                  │
+                                  ▼
+                         ┌────────────────┐
+                         │     LOGITS     │
+                         └────────┬───────┘
+                                  │
+                                  ▼
+                    ┌─────────────────────────┐
+                    │      SAMPLING           │
+                    │ Temperature / Top-K     │
+                    │ Top-P / Repetition      │
+                    └────────────┬────────────┘
+                                 │
+                                 ▼
+                         ┌────────────────┐
+                         │ GENERATED TEXT │
+                         └────────────────┘
 ```
-privan-130m/
-├── README.md                 # Technical documentation & theory
-├── LICENSE                   # Apache 2.0 license
-├── requirements.txt          # Minimal production dependencies
-├── pyproject.toml            # Package configuration
-├── MODEL_CARD.md             # Model card & ethical guidelines
-├── configs/
-│   ├── 130m.yaml             # Primary ~130M model training configuration
-│   ├── tiny.yaml             # 2-layer miniature model for rapid testing
-│   └── debug.yaml            # Debugging configuration for instant verification
-├── data/
-│   ├── raw/                  # Raw text, jsonl, or parquet datasets
-│   ├── processed/            # Binary memory-mapped tokenized chunks (.bin)
-│   ├── tokenizer/            # Trained Byte-Level BPE tokenizer files
-│   └── README.md             # Ethical data guidelines & storage documentation
-├── checkpoints/              # Model weights (latest.pt, best.pt, step_*.pt)
-├── logs/                     # Text logs and TensorBoard experiment event files
+
+---
+
+## ⚡ KV Cache Visualization
+
+Privan-130M supports KV caching for autoregressive generation.
+
+Instead of recomputing previous keys and values at every generation step:
+
+```text
+Token 1
+   │
+   ▼
+ Q ───┐
+ K ───┼──► KV CACHE
+ V ───┘
+
+
+Token 2
+   │
+   ▼
+New Q
+New K ─────► Append to Cache
+New V ─────► Append to Cache
+   │
+   ▼
+Attention over cached K/V
+   │
+   ▼
+Next Token
+```
+
+This allows previously computed attention states to be reused during generation.
+
+---
+
+# 🏗️ Model Architecture
+
+Privan-130M uses a decoder-only Transformer architecture.
+
+| Component                  |         Configuration |
+| -------------------------- | --------------------: |
+| Approx. Model Class        |                  130M |
+| Exact Trainable Parameters |           124,439,808 |
+| Vocabulary Size            |                50,257 |
+| Context Length             |                 1,024 |
+| Transformer Layers         |                    12 |
+| Attention Heads            |                    12 |
+| Head Dimension             |                    64 |
+| Embedding Dimension        |                   768 |
+| MLP Dimension              |                 3,072 |
+| Activation                 |                  GELU |
+| Normalization              |         Pre-LayerNorm |
+| Position Encoding          |               Learned |
+| Attention                  | Causal Self-Attention |
+| LM Head                    |           Weight Tied |
+| KV Cache                   |                     ✅ |
+| LoRA                       |                     ✅ |
+| DDP                        |                     ✅ |
+| Mixed Precision            |                     ✅ |
+
+---
+
+# 🔢 Parameter Count
+
+The model contains:
+
+```text
+124,439,808
+```
+
+unique trainable parameters with token embedding and LM-head weight tying.
+
+Therefore the project is more precisely described as:
+
+> **A ~124.4M-parameter decoder-only Transformer in the ~130M model class.**
+
+The `130M` name is used as a model-class approximation rather than an exact parameter count.
+
+---
+
+# 🧩 Core Components
+
+## 1. Token Embeddings
+
+Each token ID is converted into a dense vector:
+
+```text
+Token ID
+   ↓
+Embedding Table
+   ↓
+768-dimensional vector
+```
+
+The model uses a vocabulary of **50,257 tokens**.
+
+---
+
+## 2. Positional Embeddings
+
+Privan-130M uses learned positional embeddings.
+
+```text
+Token Embedding
+       +
+Position Embedding
+       ↓
+Transformer Input
+```
+
+The maximum supported context length is **1,024 tokens**.
+
+---
+
+## 3. Multi-Head Causal Self-Attention
+
+Each Transformer block contains 12 attention heads.
+
+```text
+Input
+  │
+  ▼
+Fused QKV Projection
+  │
+  ├──── Q
+  ├──── K
+  └──── V
+       │
+       ▼
+Multi-Head Attention
+       │
+       ▼
+Output Projection
+```
+
+Causal masking ensures that a token cannot attend to future tokens.
+
+```text
+Token 1 → Token 1
+Token 2 → Token 1, Token 2
+Token 3 → Token 1, Token 2, Token 3
+Token 4 → Token 1, Token 2, Token 3, Token 4
+```
+
+---
+
+# 🧠 Transformer Block
+
+Each block follows a Pre-LayerNorm architecture:
+
+```text
+                 Input
+                   │
+                   ▼
+              LayerNorm
+                   │
+                   ▼
+          Causal Self-Attention
+                   │
+                   ▼
+             Residual Add
+                   │
+                   ▼
+              LayerNorm
+                   │
+                   ▼
+                 MLP
+                   │
+                   ▼
+             Residual Add
+                   │
+                   ▼
+                Output
+```
+
+There are **12 Transformer blocks**.
+
+---
+
+# 🔥 MLP
+
+The feed-forward network expands the hidden dimension:
+
+```text
+768
+ │
+ ▼
+3072
+ │
+ ▼
+GELU
+ │
+ ▼
+768
+```
+
+The model uses approximate GELU activation.
+
+---
+
+# 🔗 Weight Tying
+
+The token embedding matrix and language-model output matrix share the same weights.
+
+```text
+             ┌─────────────────┐
+             │ Token Embedding  │
+             └────────┬────────┘
+                      │
+                      │ Shared Weights
+                      │
+             ┌────────▼────────┐
+             │    LM Head      │
+             └─────────────────┘
+```
+
+This reduces the number of unique parameters and follows a common language-model design.
+
+---
+
+# 📚 Training Pipeline
+
+```text
+Raw Documents
+      │
+      ▼
+Text Cleaning
+      │
+      ▼
+Document Deduplication
+      │
+      ▼
+BPE Tokenization
+      │
+      ▼
+Binary Token Storage
+      │
+      ▼
+Context Window Creation
+      │
+      ▼
+Micro-Batching
+      │
+      ▼
+Gradient Accumulation
+      │
+      ▼
+Mixed Precision
+      │
+      ▼
+Gradient Clipping
+      │
+      ▼
+AdamW Optimizer
+      │
+      ▼
+Warmup + Cosine LR
+      │
+      ▼
+Checkpointing
+      │
+      ▼
+Validation / Perplexity
+```
+
+---
+
+# ⚙️ Training Configuration
+
+Default production configuration:
+
+```yaml
+vocab_size: 50257
+context_length: 1024
+embedding_dim: 768
+num_layers: 12
+num_heads: 12
+mlp_dim: 3072
+
+learning_rate: 3e-4
+min_learning_rate: 3e-5
+
+beta1: 0.9
+beta2: 0.95
+weight_decay: 0.1
+
+warmup_steps: 2000
+max_steps: 100000
+
+batch_size: 8
+gradient_accumulation_steps: 16
+
+precision: bf16
+```
+
+At:
+
+```text
+8 × 16 × 1024
+```
+
+the effective token batch is approximately:
+
+```text
+131,072 tokens / optimizer step / GPU
+```
+
+before accounting for distributed world size.
+
+---
+
+# 🧮 Optimizer
+
+The project uses **AdamW** with decoupled weight decay.
+
+Parameters are separated into:
+
+```text
+Weight Decay
+├── Matrix parameters
+└── Higher-dimensional weights
+
+No Weight Decay
+├── Bias
+├── LayerNorm
+└── 1D parameters
+```
+
+---
+
+# 📈 Learning Rate Schedule
+
+Training uses:
+
+```text
+        Warmup
+          /
+         /
+        /──────────────
+       /                \
+      /                  \
+     /                    \
+    /                      \
+   /                        \
+  /                          \
+Start                         Min LR
+```
+
+The scheduler combines:
+
+* Linear warmup
+* Cosine decay
+* Configurable minimum learning rate
+
+---
+
+# 🧪 Mixed Precision
+
+The training system supports:
+
+```text
+FP32
+BF16
+FP16
+```
+
+Mixed precision reduces GPU memory consumption and can improve training throughput on compatible hardware.
+
+---
+
+# 🚀 Distributed Training
+
+Privan-130M includes PyTorch Distributed Data Parallel support.
+
+```text
+                 Training Dataset
+                       │
+             ┌─────────┼─────────┐
+             ▼         ▼         ▼
+           GPU 0     GPU 1     GPU 2
+             │         │         │
+             └─────────┼─────────┘
+                       ▼
+                Gradient Sync
+                       │
+                       ▼
+                Global Update
+```
+
+---
+
+# 🎯 LoRA Fine-Tuning
+
+Low-Rank Adaptation is supported for parameter-efficient fine-tuning.
+
+Conceptually:
+
+```text
+Original Linear Layer
+        +
+      LoRA
+   ┌───────────┐
+   │ A × B     │
+   │ rank = r  │
+   └───────────┘
+        │
+        ▼
+Adapted Output
+```
+
+The base model weights can remain frozen while only the LoRA parameters are trained.
+
+Default LoRA targets include:
+
+```text
+qkv_proj
+out_proj
+```
+
+---
+
+# 💾 Checkpointing
+
+Training checkpoints can contain:
+
+```text
+Model State
+Optimizer State
+Scheduler State
+Training Step
+Configuration
+Scaler State
+```
+
+This allows training to resume without restarting the complete run.
+
+---
+
+# 📊 Evaluation
+
+The training framework supports:
+
+* Validation loss
+* Perplexity
+* Training loss tracking
+* TensorBoard logging
+* Checkpoint evaluation
+
+Example:
+
+```text
+Training Loss
+      │
+      │\
+      │ \
+      │  \
+      │   \
+      │    \____
+      │
+      └──────────────► Steps
+```
+
+---
+
+# ✍️ Text Generation
+
+Generation supports:
+
+### Temperature
+
+Controls sampling randomness.
+
+```text
+Low Temperature
+      ↓
+More deterministic
+
+High Temperature
+      ↓
+More diverse
+```
+
+### Top-K
+
+Restricts sampling to the K highest-probability tokens.
+
+### Top-P
+
+Samples from the smallest probability mass whose cumulative probability reaches the selected threshold.
+
+### Repetition Penalty
+
+Reduces repetitive generation.
+
+---
+
+# 🔄 Generation Pipeline
+
+```text
+Prompt
+  │
+  ▼
+Tokenizer
+  │
+  ▼
+Token IDs
+  │
+  ▼
+Transformer
+  │
+  ▼
+KV Cache
+  │
+  ▼
+Logits
+  │
+  ▼
+Sampling
+  │
+  ▼
+Next Token
+  │
+  └──────────────┐
+                 │
+                 ▼
+             Repeat
+                 │
+                 ▼
+          Generated Text
+```
+
+---
+
+# 🌐 FastAPI Inference
+
+The project provides an API layer for model inference.
+
+Example architecture:
+
+```text
+Client
+  │
+  ▼
+FastAPI
+  │
+  ▼
+Tokenizer
+  │
+  ▼
+Privan-130M
+  │
+  ▼
+Generation Engine
+  │
+  ▼
+Response
+```
+
+Example endpoint structure:
+
+```http
+POST /generate
+```
+
+Request:
+
+```json
+{
+  "prompt": "Artificial intelligence is",
+  "max_new_tokens": 100,
+  "temperature": 0.8,
+  "top_k": 50,
+  "top_p": 0.95
+}
+```
+
+---
+
+# 📁 Project Structure
+
+```text
+LLM-130M/
+│
 ├── src/
 │   └── llm/
-│       ├── config.py         # Type-safe dataclass configurations
-│       ├── tokenizer.py      # Byte-Level BPE Tokenizer wrapper
-│       ├── dataset.py        # Cleaning, chunking, and memory-mapped Dataset
 │       ├── model/
-│       │   ├── embeddings.py       # Token & Learned Positional Embeddings
-│       │   ├── attention.py        # Causal Multi-Head Self-Attention with KV Cache
-│       │   ├── mlp.py              # Feed-Forward Network with GELU
-│       │   ├── transformer_block.py# Pre-LN Transformer Decoder Block
-│       │   ├── transformer.py      # Transformer Backbone
-│       │   ├── lm.py               # CausalLM with LM Head & Weight Tying
-│       │   └── lora.py             # Low-Rank Adaptation (LoRA) module
+│       │   ├── embeddings.py
+│       │   ├── attention.py
+│       │   ├── mlp.py
+│       │   ├── transformer_block.py
+│       │   ├── transformer.py
+│       │   ├── lm.py
+│       │   └── lora.py
+│       │
 │       ├── training/
-│       │   ├── optimizer.py        # AdamW with Decoupled Weight Decay
-│       │   ├── scheduler.py        # Linear Warmup + Cosine Annealing
-│       │   ├── checkpoint.py       # Full state checkpointing & NaN recovery
-│       │   ├── distributed.py      # Multi-GPU DDP orchestrator
-│       │   └── trainer.py          # Complete training & validation engine
+│       │   ├── trainer.py
+│       │   ├── optimizer.py
+│       │   ├── scheduler.py
+│       │   └── checkpoint.py
+│       │
 │       ├── generation/
-│       │   ├── sampler.py          # Greedy, Temp, Top-K, Top-P, Repetition penalty
-│       │   └── generate.py         # Autoregressive generation & streaming
-│       ├── evaluation/
-│       │   └── evaluate.py         # Cross-entropy loss & perplexity evaluation
-│       └── utils/
-│           ├── device.py           # Hardware inspection & precision selector
-│           ├── seed.py             # Global determinism & reproducibility
-│           └── logging.py          # Structured logging setup
+│       │   ├── generate.py
+│       │   └── sampler.py
+│       │
+│       ├── dataset.py
+│       └── tokenizer.py
+│
 ├── scripts/
-│   ├── train_tokenizer.py    # Train BPE tokenizer on raw text
-│   ├── prepare_data.py       # Clean, tokenize, and chunk into .bin files
-│   ├── count_parameters.py   # Programmatic parameter counter
-│   ├── pretrain.py           # Pretraining engine (single-GPU & DDP)
-│   ├── finetune.py           # Instruction fine-tuning (with LoRA & response masking)
-│   ├── evaluate.py           # Checkpoint evaluation script
-│   ├── generate.py           # CLI generation script with streaming
-│   ├── export_model.py       # Export to PyTorch .pt, Safetensors, HuggingFace format
-│   ├── data_report.py        # Data quality & statistics report
-│   └── benchmark.py          # Latency, throughput, and KV-cache benchmark
-├── inference/
-│   ├── app.py                # Production FastAPI REST server
-│   └── cli.py                # Interactive terminal shell
+│   ├── prepare_data.py
+│   ├── pretrain.py
+│   └── ...
+│
 ├── tests/
-│   ├── test_tokenizer.py     # Tokenizer unit tests
-│   ├── test_attention.py     # Causal masking & KV-cache parity tests
-│   ├── test_model.py         # Shapes, weight tying, and initialization tests
-│   ├── test_dataset.py       # Data packing & memmap tests
-│   ├── test_generation.py    # Sampling algorithms & streaming tests
-│   ├── test_training.py      # AdamW weight decay, scheduler, and checkpoints
-│   └── test_overfit.py       # Single-batch overfitting verification test
-└── notebooks/
-    ├── tokenizer.ipynb       # Tokenizer exploration notebook
-    ├── architecture.ipynb    # Architecture inspection notebook
-    └── training.ipynb        # Training curves and optimization notebook
+│   ├── test_attention.py
+│   ├── test_model.py
+│   ├── test_training.py
+│   ├── test_generation.py
+│   └── test_overfit.py
+│
+├── configs/
+│
+├── data/
+│
+├── checkpoints/
+│
+├── requirements.txt
+├── pyproject.toml
+└── README.md
 ```
 
 ---
 
-## Theoretical Foundations & Engineering Principles
+# 🧪 Testing
 
-### 1. What is an LLM?
-A Large Language Model is a deep parametric function $f_\theta$ trained over extensive text corpora to approximate the joint probability distribution of natural language tokens:
-$$P(x_1, x_2, \dots, x_N) = \prod_{t=1}^N P(x_t \mid x_1, \dots, x_{t-1})$$
+The project includes tests for:
 
-### 2. What is a Transformer?
-Introduced by Vaswani et al. (2017), the Transformer eliminates recurrent and convolutional structures in favor of parallel attention mechanisms. In a decoder-only transformer, representations are built by iteratively refining hidden states through stacked self-attention and non-linear feed-forward transformations.
+```text
+✓ Attention shapes
+✓ Causal masking
+✓ SDPA / manual attention parity
+✓ KV-cache attention
+✓ Transformer blocks
+✓ Weight tying
+✓ Parameter count
+✓ Optimizer grouping
+✓ Learning-rate scheduler
+✓ Checkpoint save/load
+✓ Generation
+✓ Sampling
+✓ Repetition penalty
+✓ Tiny-model overfitting
+```
 
-### 3. What is Causal Language Modeling?
-Causal Language Modeling (CLM) trains the network autoregressively: given the history of previous tokens $x_{<t} = (x_1, \dots, x_{t-1})$, the model predicts the probability distribution over the vocabulary for token $x_t$. The training loss is the negative log-likelihood (Cross-Entropy):
-$$\mathcal{L}(\theta) = - \frac{1}{T} \sum_{t=1}^T \log P_\theta(x_t \mid x_{<t})$$
-The perplexity (PPL) is the exponentiated loss:
-$$\text{PPL} = \exp(\mathcal{L})$$
-representing the effective branching factor of the model's uncertainty.
+Run:
 
-### 4. What is Self-Attention & Why Multiple Heads?
-Given an input sequence $X \in \mathbb{R}^{B \times T \times D}$, query ($Q$), key ($K$), and value ($V$) representations are projected linearly:
-$$Q = X W_Q, \quad K = X W_K, \quad V = X W_V$$
-Scaled dot-product attention computes:
-$$\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{Q K^T}{\sqrt{d_{\text{head}}}}\right) V$$
-Dividing by $\sqrt{d_{\text{head}}}$ prevents dot products from growing excessively large in high dimensions, which would drive the softmax into saturated regions with vanishingly small gradients.
-
-**Multi-Head Attention** splits the embedding dimension $D$ across $H$ heads ($d_{\text{head}} = D / H$). This allows the model to jointly attend to information from different representation subspaces at different positions simultaneously (e.g. syntax, semantic co-occurrence, long-range entity coreference).
-
-### 5. What is Positional Encoding?
-Transformers are permutation-invariant by design; without positional information, shuffling tokens in the input yields identical attention patterns. Privan-130M uses **learned positional embeddings**: a parameter matrix $W_{\text{pos}} \in \mathbb{R}^{\text{context\_length} \times D}$ that is indexed by discrete position indices $t \in [0, \text{context\_length}-1]$ and directly added element-wise to the token embeddings.
-
-### 6. Why Pre-LayerNorm & Residual Connections?
-- **Residual Connections** ($x \leftarrow x + f(x)$) create identity gradient highways, allowing error signals to backpropagate across dozens of layers without vanishing.
-- **Pre-LayerNorm** applies normalization $\text{LN}(x)$ to the input of each sub-layer *before* the multi-head attention and feed-forward blocks:
-  $$x^{(l)}_{1} = x^{(l-1)} + \text{Attention}(\text{LN}_1(x^{(l-1)}))$$
-  $$x^{(l)} = x^{(l)}_1 + \text{MLP}(\text{LN}_2(x^{(l)}_1))$$
-  Unlike Post-LayerNorm (used in early Transformers), Pre-LayerNorm keeps the residual stream un-normalized and mathematically clean, preventing gradient explosion at initialization and making training robust without delicate learning rate tuning.
-
-### 7. Why GELU?
-The Gaussian Error Linear Unit (GELU) weights inputs by their value rather than gating strictly by their sign like ReLU:
-$$\text{GELU}(x) = x \Phi(x) = x P(X \le x), \quad X \sim \mathcal{N}(0, 1)$$
-Privan-130M uses the fast tanh approximation:
-$$\text{GELU}(x) \approx 0.5 x \left(1 + \tanh\left(\sqrt{\frac{2}{\pi}} \left(x + 0.044715 x^3\right)\right)\right)$$
-GELU provides smooth non-zero curvature across the entire real number line, preventing "dead neurons" and accelerating convergence in language modeling.
-
-### 8. Why AdamW & Decoupled Weight Decay?
-Standard L2 regularization in Adam adds the weight decay term directly to the gradient, which inadvertently scales regularization by the moving average of squared gradients ($v_t$). AdamW (Loshchilov & Hutter, 2017) decouples weight decay by subtracting it directly from the parameter after the adaptive step:
-$$\theta_{t+1} = \theta_t - \gamma_t \lambda \theta_t - \gamma_t \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon}$$
-In Privan-130M, weight decay ($0.1$) is strictly applied to 2D weight matrices (linear layers and embeddings), while 1D tensors (biases and LayerNorm scale/shift parameters) have weight decay set to $0.0$.
-
-### 9. Why Warmup and Cosine Decay?
-- **Linear Warmup**: At step 0, adaptive optimizer states ($\hat{m}_t, \hat{v}_t$) have high variance. Linearly ramping the learning rate from 0 to $3 \times 10^{-4}$ over the first 2,000 steps prevents destabilizing early updates.
-- **Cosine Annealing**: Decaying the learning rate smoothly toward $\eta_{\min} = 3 \times 10^{-5}$ according to:
-  $$\eta_t = \eta_{\min} + \frac{1}{2} (\eta_{\max} - \eta_{\min}) \left(1 + \cos\left(\pi \frac{t - t_{\text{warmup}}}{T_{\max} - t_{\text{warmup}}}\right)\right)$$
-  allows the optimizer to escape sharp local minima early on and settle into flat, generalizable basins toward the end of training.
-
-### 10. Why Gradient Accumulation?
-Training foundation models with large effective batch sizes (e.g. 128 sequences = 131,072 tokens per update) often exceeds available GPU memory. Gradient accumulation splits the effective batch into micro-batches (e.g. batch size 8), accumulates gradients over 16 micro-steps, and performs a single optimizer step, producing mathematically equivalent gradient updates while fitting comfortably within modest VRAM.
-
-### 11. Why KV Cache?
-During autoregressive generation, tokens are predicted one by one. In naive generation, passing the growing sequence of length $t$ repeatedly recomputes Key and Value projections for all previous $t-1$ tokens, leading to quadratic $\mathcal{O}(T^2)$ time complexity.
-
-With **KV Caching**, previous keys and values for each layer are stored in memory. At step $t$, only the new token $x_t$ is projected into $Q_t, K_t, V_t$. $K_t$ and $V_t$ are appended to the cache, reducing per-token generation complexity from $\mathcal{O}(T)$ to $\mathcal{O}(1)$ attention computation.
+```bash
+pytest -q
+```
 
 ---
 
-## Quickstart Guide
+# 🛠️ Installation
 
-### 1. Installation
+Clone the repository:
+
 ```bash
-git clone https://github.com/your-username/privan-130m.git
-cd privan-130m
+git clone https://github.com/priyan1436ei-lab/LLM-130M.git
+cd LLM-130M
+```
+
+Create a virtual environment:
+
+```bash
+python -m venv .venv
+```
+
+Activate it on Windows:
+
+```powershell
+.venv\Scripts\activate
+```
+
+Install dependencies:
+
+```bash
 pip install -r requirements.txt
 ```
 
-### 2. Parameter Count Verification
-Run the programmatic parameter counting script:
+---
+
+# 📦 Data Preparation
+
+Prepare the training data:
+
 ```bash
-python scripts/count_parameters.py --config configs/130m.yaml
+python scripts/prepare_data.py
 ```
 
-### 3. Run Complete Test Suite
-Verify model architecture, causal masking, KV-cache, and single-batch memorization:
-```bash
-pytest -v
-```
+The pipeline performs:
 
-### 4. Train Tokenizer
-Train the Byte-Level BPE tokenizer on raw text:
-```bash
-python scripts/train_tokenizer.py --input data/raw --output data/tokenizer --vocab-size 50257
-```
-
-### 5. Prepare & Tokenize Dataset
-Clean, split (98% train, 1% val, 1% test), and compile memory-mapped binary chunks:
-```bash
-python scripts/prepare_data.py --input data/raw --tokenizer-dir data/tokenizer --output-dir data/processed
-```
-Inspect dataset quality and token counts:
-```bash
-python scripts/data_report.py
-```
-
-### 6. Pretraining
-Train locally on GPU or CPU:
-```bash
-python scripts/pretrain.py --config configs/130m.yaml
-```
-Resume from a previous checkpoint:
-```bash
-python scripts/pretrain.py --config configs/130m.yaml --resume checkpoints/latest.pt
-```
-
-### 7. Multi-GPU Distributed Pretraining (DDP)
-Launch multi-GPU distributed data parallel training with `torchrun`:
-```bash
-torchrun --nproc_per_node=4 scripts/pretrain.py --config configs/130m.yaml
-```
-
-### 8. Evaluation
-Compute validation loss and perplexity:
-```bash
-python scripts/evaluate.py --checkpoint checkpoints/latest.pt --config configs/130m.yaml --data data/processed/val.bin
-```
-
-### 9. Autoregressive Text Generation
-Generate text using Top-P nucleus sampling and KV-caching:
-```bash
-python scripts/generate.py --checkpoint checkpoints/latest.pt --prompt "Artificial intelligence is" --max-new-tokens 150 --stream
-```
-
-### 10. Instruction Fine-Tuning (with LoRA)
-Fine-tune on instruction-response pairs with response-only loss masking:
-```bash
-python scripts/finetune.py --config configs/130m.yaml --checkpoint checkpoints/latest.pt --data data/raw/instructions.jsonl --use-lora --lora-rank 8
-```
-
-### 11. Model Export
-Export checkpoints to `.pt`, `safetensors`, and Hugging Face format:
-```bash
-python scripts/export_model.py --checkpoint checkpoints/latest.pt --config configs/130m.yaml --output-dir export
-```
-
-### 12. Inference REST API Server
-Start the high-performance FastAPI inference server:
-```bash
-python inference/app.py
-```
-Or interact via terminal CLI:
-```bash
-python inference/cli.py --checkpoint checkpoints/latest.pt
+```text
+Input Documents
+      ↓
+Cleaning
+      ↓
+Normalization
+      ↓
+Deduplication
+      ↓
+Train / Validation / Test Split
+      ↓
+Tokenization
+      ↓
+Binary Token Dataset
 ```
 
 ---
 
-## Benchmarking & Performance Profiling
+# 🏋️ Training
 
-Run the comprehensive performance benchmark suite:
+Start pretraining using the configured training script:
+
 ```bash
-python scripts/benchmark.py --config configs/debug.yaml
+python scripts/pretrain.py
 ```
-Measures:
-- Forward pass latency (ms)
-- Backward pass latency (ms)
-- Training throughput (tokens/sec)
-- Autoregressive generation throughput with vs. without KV cache (tokens/sec)
-- Peak memory consumption
+
+For distributed training:
+
+```bash
+torchrun --nproc_per_node=4 scripts/pretrain.py
+```
+
+Adjust the number of processes according to the available GPUs.
 
 ---
 
-## License
-Privan-130M is released under the **Apache 2.0 License**. See [LICENSE](LICENSE) for details.
+# 💬 Inference
+
+A typical generation workflow:
+
+```python
+from llm.model.lm import CausalLM
+
+model = CausalLM(...)
+model.eval()
+
+output = model.generate(
+    prompt="The future of artificial intelligence",
+    max_new_tokens=100
+)
+
+print(output)
+```
+
+---
+
+# 📈 Performance
+
+Benchmark results should always be reported together with the hardware and software configuration.
+
+Recommended benchmark metadata:
+
+```text
+GPU:
+CUDA:
+PyTorch:
+Precision:
+Batch Size:
+Context Length:
+Prompt Length:
+Generated Tokens:
+Warmup Runs:
+Measured Runs:
+Average Latency:
+Tokens / Second:
+```
+
+This makes performance comparisons reproducible.
+
+---
+
+# 🔬 Engineering Design Goals
+
+Privan-130M was designed around several principles:
+
+### 1. From Scratch
+
+Core Transformer components are implemented directly in PyTorch rather than relying on a high-level pretrained language-model implementation.
+
+### 2. Modularity
+
+Model, training, dataset, generation, and serving components are separated.
+
+### 3. Reproducibility
+
+Configuration-driven training, checkpointing, evaluation, and tests are included.
+
+### 4. Efficient Inference
+
+KV caching and optimized attention paths are supported.
+
+### 5. Parameter-Efficient Fine-Tuning
+
+LoRA support enables adaptation without updating every base-model parameter.
+
+### 6. Scalable Training
+
+The training stack supports gradient accumulation, mixed precision, and distributed training.
+
+---
+
+# ⚠️ Current Project Status
+
+> **Important:** The repository currently represents a substantial from-scratch LLM implementation and training framework. The checked-in demonstration dataset is not sufficient evidence of large-scale pretraining.
+
+Current status:
+
+```text
+Transformer Architecture     ✅
+Causal Attention             ✅
+KV Cache                     ✅
+Weight Tying                 ✅
+LoRA                         ✅
+AdamW                        ✅
+LR Scheduler                 ✅
+Mixed Precision              ✅
+DDP Support                  ✅
+Checkpointing                ✅
+FastAPI Serving              ✅
+Generation                   ✅
+Testing                      ✅
+Large-Scale Pretraining      🚧
+Production Corpus            🚧
+Full Pretrained Checkpoint   🚧
+```
+
+The model should therefore currently be described as:
+
+> **A from-scratch ~124.4M-parameter decoder-only Transformer implementation and training framework.**
+
+A claim that it is a fully pretrained foundation model should only be made after documenting the actual large-scale training run.
+
+---
+
+# 🚧 Roadmap
+
+## Phase 1 — Core Architecture
+
+* [x] Decoder-only Transformer
+* [x] Multi-head causal attention
+* [x] Pre-LayerNorm
+* [x] GELU MLP
+* [x] Learned positional embeddings
+* [x] Weight tying
+
+## Phase 2 — Training Infrastructure
+
+* [x] AdamW
+* [x] Gradient accumulation
+* [x] Gradient clipping
+* [x] Mixed precision
+* [x] Checkpointing
+* [x] TensorBoard
+* [x] DDP
+
+## Phase 3 — Efficient Inference
+
+* [x] KV cache
+* [x] Top-K sampling
+* [x] Top-P sampling
+* [x] Temperature
+* [x] Repetition penalty
+* [x] Streaming generation
+
+## Phase 4 — Fine-Tuning
+
+* [x] LoRA
+* [ ] Instruction tuning
+* [ ] Chat fine-tuning
+* [ ] Preference optimization
+
+## Phase 5 — Large-Scale Pretraining
+
+* [ ] Production-scale corpus
+* [ ] Large-scale tokenization
+* [ ] Data quality filtering
+* [ ] Training run
+* [ ] Loss curves
+* [ ] Perplexity evaluation
+* [ ] Standard benchmarks
+* [ ] Reproducible compute report
+
+## Phase 6 — Release
+
+* [ ] Hugging Face model release
+* [ ] Model card
+* [ ] Dataset documentation
+* [ ] License documentation
+* [ ] Quantized model
+* [ ] Production inference deployment
+
+---
+
+# 🧭 Research & Learning Focus
+
+This project is intended to provide practical understanding of:
+
+```text
+Tokenization
+     ↓
+Language Modeling
+     ↓
+Transformer Architecture
+     ↓
+Self-Attention
+     ↓
+Causal Masking
+     ↓
+Optimization
+     ↓
+Distributed Training
+     ↓
+Efficient Inference
+     ↓
+Fine-Tuning
+     ↓
+Model Serving
+```
+
+It is both a learning project and an engineering foundation for experimenting with small-to-medium language models.
+
+---
+
+# 👨‍💻 Author
+
+**Priyan**
+
+B.Tech Information Technology
+Prathyusha Engineering College
+
+Areas of interest:
+
+* Artificial Intelligence
+* Machine Learning
+* Large Language Models
+* Generative AI
+* Full-Stack Development
+* AI Engineering
+* Research & Experimentation
+
+---
+
+# ⭐ Repository
+
+**GitHub**
+
+`https://github.com/priyan1436ei-lab/LLM-130M`
+
+If you find the project useful, consider giving the repository a ⭐.
+
+---
+
+# 📜 License
+
+See the repository license for the current licensing terms.
+
+---
+
+## ⚡ Privan-130M
+
+> **Build the Transformer. Understand the Model. Train the Intelligence.**
